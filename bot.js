@@ -167,7 +167,7 @@ const PAGES = {
     
         const membersList = MEMBERS.map(m => `${m.emoji[0]} ${m.name} ${m.username}`).join('\n');
             
-        await sendMediaMessage(ctx, './imgs/members.jpg');
+        await sendMediaMessage(ctx, './assets/imgs/members.jpg');
         await ctx.telegram.sendMessage(chatId, `<b>👇 Вот они все 👇</b>\n\n${membersList}\n\n(Учи запоминай, повторяй перед сном)`, {
             parse_mode: 'HTML',
             reply_markup: {
