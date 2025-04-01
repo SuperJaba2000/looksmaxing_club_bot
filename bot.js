@@ -3,18 +3,19 @@ import { readFile } from 'fs/promises';
 
 
 /////////
+// Configuration and utilities
 
 
-const colorcodes = [37, 90, 31, 91, 92];
+const color_codes = [37, 90, 31, 91, 92];
 
 function log(data, where='global', color=0) {
-    process.stdout.write(`\x1b[${colorcodes[color]}m[${where}]: ${data}\x1b[0m\n`);
+    process.stdout.write(`\x1b[${color_codes[color]}m[${where}]: ${data}\x1b[0m\n`);
 };
 
-let broken = false;
+let isBroken = false;
 
 process.on('uncaughtException', err => {
-    broken = true;
+    isBroken = true;
     log(`Fatal global error! ${err}`, 'global', 3);
 });
 
@@ -29,7 +30,12 @@ async function _readFile(path) {
     });
 };
 
-const BOT_TOKEN = process.env.BOT_TOKEN || await _readFile('./BOT_TOKEN.txt') || '7818057731:AAEPt-Q-IFtGLgX-zpSvroPJoPtCHNVL1cA';
+
+/////////
+// Initialization
+
+
+const BOT_TOKEN = process.env.BOT_TOKEN || await _readFile('./BOT_TOKEN.txt');
 
 if(!BOT_TOKEN) {
     throw new Error('BOT_TOKEN not found in environment variables / local file');
@@ -42,10 +48,11 @@ process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 
 /////////
+// The data model
 
 
 class ClubMember {
-    constructor(name, username, emoji, photo_source='./imgs/logo.jpg') {
+    constructor(name, username, emoji, photo_source='./assets/imgs/logo.jpg') {
         this.name = name;
         this.username = username;
         this.emoji = emoji;
@@ -53,7 +60,7 @@ class ClubMember {
     }
 };
 
-const members = [
+const MEMBERS = [
     new ClubMember('Захар Леванюк', '@KokomaKochi', ['🤫']),
     new ClubMember('Саввва Пеганов', '@dtgbrosry', ['🥶']),
     new ClubMember('Роман Власов', '@Romanchik0000', ['💪']),
@@ -76,172 +83,180 @@ const members = [
 
 
 /////////
+// The life cycle of media messages
 
 
-let mediaMessagesId = {};
-
-async function sendPhoto(ctx, chat_id, source, isSpoiler=false) {
-    let mediaMessage = await ctx.telegram.sendPhoto(chat_id, { 
-        source: source,
-        has_spoiler: isSpoiler
-    });
-
-    mediaMessagesId[chat_id] = mediaMessage.message_id;
+function getChatId(ctx) {
+    return ctx.message?.chat?.id || ctx.update?.callback_query?.message?.chat.id || ctx.update?.message?.chat.id;
 }
 
-async function page_menu(ctx) {
-    let chat_id = ctx.message?.chat?.id || ctx.update.callback_query.message.chat.id;
-    await ctx.telegram.sendMessage(chat_id, 'Привет друг!\n\nПодпишись на канал @looksmaxing_club, если ещё не подписан!\n\nЛюксмакс тебе и твоему дому! 🤫', {
-        reply_markup: {
-            inline_keyboard: [
-                [{text: 'Кто такие люксмаксы?', callback_data: 'whois'}, {text: 'Кто входит в люксмакс?', callback_data: 'clubmembers'}],
-                [{text: 'Тапать ЛюксКоины! 🤑', callback_data: 'coins'}]
-            ]
+let mediaMessagesCache = new Map();
+
+async function sendMediaMessage(ctx, source) {
+    let chatId = getChatId(ctx);
+
+    try {
+        const mediaMessage = await ctx.telegram.sendPhoto(chatId, { 
+            source: source
+        });
+        mediaMessagesCache.set(chatId, mediaMessage.message_id);
+    } catch (err) {
+        log(`Failed to send media message: ${err}`, 'sendMediaMessage', 2);
+    }
+}
+
+
+async function cleanupMediaMessages(ctx) {
+    let chatId = getChatId(ctx);
+
+    if (mediaMessagesCache.has(chatId)) {
+        try {
+            await ctx.telegram.deleteMessage(chatId, mediaMessagesCache.get(chatId));
+            mediaMessagesCache.delete(chatId);
+        } catch (err) {
+            log(`Failed to delete media message: ${err}`, 'cleanupMediaMessages', 'red');
         }
-    });
-};
+    }
+}
 
-async function page_whois(ctx) {
-    let chat_id = ctx.update.callback_query.message.chat.id;
 
-    /*await ctx.telegram.sendVideo(ctx.update.callback_query.message.chat.id, {
-        source: './imgs/whois.mp4',
-        caption: 'Этим видео всё сказано.',
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [
-                [{text: '<< В меню', callback_data: 'menu'}]
-            ]
-        }
-    });*/
+/////////
+// User Interface Pages
 
-    await sendPhoto(ctx, chat_id, './imgs/whois.jpg');
-    await ctx.telegram.sendMessage(chat_id, 'Не чувак, ну такое знать надо 😡', {
-        reply_markup: {
-            inline_keyboard: [
-                [{text: '<< В меню', callback_data: 'menu'}]
-            ]
-        }
-    });
-};
 
-async function page_clubmembers(ctx) {
-    let chat_id = ctx.update.callback_query.message.chat.id;
-
-    let string = '<b>👇 Вот они все 👇</b>\n\n';
-    for(let member of members) {
-        string += `${member.emoji[0]} ${member.name} ${member.username}\n`;
-    };
-    string += '\n(Учи запоминай, повторяй перед сном)';
-
-    await sendPhoto(ctx, chat_id, './imgs/members.jpg');
-
-    await ctx.telegram.sendMessage(chat_id, string, {
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [
-                    [{text: 'Случайный Люксмакс! 🎲', callback_data: 'random'}],
-                    [{text: '<< В меню', callback_data: 'menu'}]
-            ]
-        }
-    });
-};
-
-async function page_random(ctx) {
-    let chat_id = ctx.update.callback_query.message.chat.id;
-
-    let memberIndex = Math.floor(Math.random()*members.length);
+const PAGES = {
+    menu: async ctx =>{
+        let chatId = getChatId(ctx);
     
-    if(memberIndex >= members.length)
-        memberIndex -= 1;
+        await ctx.telegram.sendMessage(chatId, 'Привет друг!\n\nПодпишись на канал @looksmaxing_club, если ещё не подписан!\n\nЛюксмакс тебе и твоему дому! 🤫', {
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: 'Кто такие люксмаксы?', callback_data: 'whois'}, {text: 'Кто входит в люксмакс?', callback_data: 'clubmembers'}],
+                    [{text: 'Тапать ЛюксКоины! 🤑', callback_data: 'coins'}]
+                ]
+            }
+        });
+    },
 
-    let member = members[memberIndex];
+    whois: async ctx => {
+        let chatId = getChatId(ctx);
+    
+        /*await ctx.telegram.sendVideo(ctx.update.callback_query.message.chat.id, {
+            source: './imgs/whois.mp4',
+            caption: 'Этим видео всё сказано.',
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: '<< В меню', callback_data: 'menu'}]
+                ]
+            }
+        });*/
+    
+        await sendMediaMessage(ctx, './assets/imgs/whois.jpg');
+        await ctx.telegram.sendMessage(chatId, 'Не чувак, ну такое знать надо 😡', {
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: '<< В меню', callback_data: 'menu'}]
+                ]
+            }
+        });
+    },
 
-    //await sendPhoto(ctx, chat_id, member.photo_source, true);
-    await ctx.telegram.sendMessage(chat_id, `<b>В этот раз тебе выпал: \n <tg-spoiler>${member.name} ${member.emoji[0]}</tg-spoiler></b>\n\n *теперь ты должен ему сотку `, {
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [
-                [{text: 'Крутить снова! 🎲', callback_data: 'random'}],
-                [{text: '<< В меню', callback_data: 'menu'}]
-            ]
-        }
-    });
-};
+    clubmembers: async ctx => {
+        let chatId = getChatId(ctx);
+    
+        const membersList = MEMBERS.map(m => `${m.emoji[0]} ${m.name} ${m.username}`).join('\n');
+            
+        await sendMediaMessage(ctx, './imgs/members.jpg');
+        await ctx.telegram.sendMessage(chatId, `<b>👇 Вот они все 👇</b>\n\n${membersList}\n\n(Учи запоминай, повторяй перед сном)`, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: 'Случайный Люксмакс! 🎲', callback_data: 'random' }],
+                    [{ text: '<< В меню', callback_data: 'menu' }]
+                ]
+            }
+        });
+    },
 
-async function page_coins(ctx) {
-    await ctx.telegram.sendMessage(ctx.update.callback_query.message.chat.id, `извини брат, пока не готово, скоро будет`, {
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [
-                [{text: '<< В меню', callback_data: 'menu'}]
-            ]
-        }
-    });
+    random: async ctx => {
+        let chatId = getChatId(ctx);
+    
+        let memberIndex = Math.floor(Math.random()*MEMBERS.length);
+        
+        if(memberIndex >= MEMBERS.length)
+            memberIndex -= 1;
+    
+        let member = MEMBERS[memberIndex];
+    
+        //await sendPhoto(ctx, chat_id, member.photo_source, true);
+        await ctx.telegram.sendMessage(chatId, `<b>В этот раз тебе выпал: \n <tg-spoiler>${member.name} ${member.emoji[0]}</tg-spoiler></b>\n\n *теперь ты должен ему сотку `, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: 'Крутить снова! 🎲', callback_data: 'random'}],
+                    [{text: '<< В меню', callback_data: 'menu'}]
+                ]
+            }
+        });
+    },
+
+    coins: async ctx => {
+        let chatId = getChatId(ctx);
+    
+        await ctx.telegram.sendMessage(chatId, `извини брат, пока не готово, скоро будет`, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [{text: '<< В меню', callback_data: 'menu'}]
+                ]
+            }
+        });
+    }
 };
 
 
 /////////
+// Event handlers
 
 
 bot.command('start', async ctx => {
     if(true) {
-        await page_menu(ctx);
+        await PAGES.menu(ctx);
     }else{
 
     }
 });
 
-bot.command('menu', page_menu);
+bot.command('menu', PAGES.menu);
 
 bot.on('callback_query', async ctx => {
-    const chat_id = ctx.update.callback_query.message.chat.id
+    const chatId = getChatId(ctx);
+    const action = ctx.update?.callback_query?.data;
 
-    await ctx.telegram.answerCbQuery(ctx.callbackQuery.id)
+    try {
+        await ctx.telegram.answerCbQuery(ctx.callbackQuery.id);
+        await cleanupMediaMessages(ctx);
+        await ctx.telegram.deleteMessage(chatId, ctx.update.callback_query.message.message_id);
 
-    if(chat_id in mediaMessagesId && mediaMessagesId[chat_id] != 0) {
-        await ctx.telegram.deleteMessage(chat_id, mediaMessagesId[chat_id])
-        mediaMessagesId[chat_id] = 0;
-    };
-
-    await ctx.telegram.deleteMessage(chat_id, ctx.update.callback_query.message.message_id);
-
-    switch(ctx.update.callback_query.data) {
-        case 'menu':
-            await page_menu(ctx);
-            break;
-
-        case 'whois':
-            await page_whois(ctx);
-            break;
-
-        case 'clubmembers':
-            await page_clubmembers(ctx);
-            break;
-
-        case 'random':
-            await page_random(ctx);
-            break;
-
-        case 'coins':
-            await page_coins(ctx);
-            break;
+        if (PAGES[action]) {
+            await PAGES[action](ctx);
+        }
+    } catch (err) {
+        log(`Callback query error: ${err}`, 'callback_query', 2);
     }
 });
 
 
 bot.on('message', async ctx => {
-    let chat_id = ctx.message?.chat?.id || ctx.update.message.chat.id;
-    let text = ctx.message?.text || ctx.update.message?.text || '';
-    let raw_text = text.replace(/\s/g, '').toLowerCase();
+    const chatId = getChatId(ctx);
+    const rawText = (ctx.message?.text || ctx.update.message?.text || '').replace(/\s/g, '').toLowerCase();
 
-    if(raw_text == 'идинахуй' || raw_text == 'пошёлнахуй' || raw_text == 'пошёлнахрен') {
-        await ctx.telegram.sendMessage(chat_id, 'сам сходи');
-    }else if(text.replace(/\s/g, '')[0] == '/'){
-        // its command
-    }else{
-        await ctx.telegram.sendMessage(chat_id, 'еблан по русски скажи че те надо');
-        await ctx.telegram.sendMessage(chat_id, 'нихуя не понимаю че ты высрал');
+    if (['идинахуй', 'пошёлнахуй', 'пошёлнахрен'].includes(rawText)) {
+        await ctx.telegram.sendMessage(chatId, 'сам сходи');
+    } else if (!rawText.startsWith('/')) {
+        await ctx.telegram.sendMessage(chatId, 'еблан по русски скажи че те надо');
+        await ctx.telegram.sendMessage(chatId, 'нихуя не понимаю че ты высрал');
     }
 });
 
@@ -249,8 +264,8 @@ bot.on('message', async ctx => {
 /////////
 
 
-bot.launch();
-
-if(!broken) {
-    log('the bot is running', 'global', 4);
-} 
+bot.launch().then( () => {
+    if(!isBroken) {
+        log('the bot is running', 'global', 4);
+    } 
+});
